@@ -160,11 +160,34 @@ def badge(text: str, kind: str) -> str:
     return f'<span class="{css}">{text}</span>'
 
 
+def _link_label(source: str, destination: str) -> str:
+    return f"{source}–{destination}"
+
+
+def _parse_link_label(label: str) -> tuple[str, str]:
+    parts = label.split("–")
+    return parts[0], parts[1]
+
+
 init_session()
 controller: SDNController = st.session_state.controller
 simulator: NetworkSimulator = st.session_state.simulator
 topology = controller.topology
 nodes = topology.get_nodes()
+
+# Build sorted link labels for dropdowns
+all_links = topology.get_links()
+link_labels = [_link_label(lk["source"], lk["destination"]) for lk in all_links]
+up_link_labels = [
+    _link_label(lk["source"], lk["destination"])
+    for lk in all_links
+    if lk["status"] == "UP"
+]
+down_link_labels = [
+    _link_label(lk["source"], lk["destination"])
+    for lk in all_links
+    if lk["status"] == "DOWN"
+]
 
 st.title("SDN-Based Dynamic Traffic Routing")
 st.caption("Centralized and Programmable Network Traffic Management")
@@ -195,12 +218,76 @@ with st.sidebar:
         failure = st.button("Simulate Link Failure", use_container_width=True)
         reset = st.button("Reset Network", use_container_width=True)
 
+    # ------------------------------------------------------------------
+    # Per-link traffic control
+    # ------------------------------------------------------------------
+    st.markdown("---")
+    st.markdown("**Per-link traffic control**")
+    if up_link_labels:
+        selected_util_link = st.selectbox(
+            "Select link to adjust",
+            up_link_labels,
+            key="util_link_select",
+        )
+        util_src, util_dst = _parse_link_label(selected_util_link)
+        try:
+            current_util = topology.get_link_info(util_src, util_dst)["utilization"]
+        except KeyError:
+            current_util = 0.0
+        new_util = st.slider(
+            "Link utilization (%)",
+            min_value=0,
+            max_value=100,
+            value=int(current_util),
+            step=1,
+            key="util_slider",
+        )
+        apply_util = st.button("Apply Utilization", use_container_width=True)
+    else:
+        st.caption("No UP links available.")
+        apply_util = False
+        selected_util_link = None
+        new_util = 0
+
+    # ------------------------------------------------------------------
+    # Per-link failure / restoration
+    # ------------------------------------------------------------------
+    st.markdown("---")
+    st.markdown("**Per-link failure control**")
+    if up_link_labels:
+        selected_fail_link = st.selectbox(
+            "Select link to fail",
+            up_link_labels,
+            key="fail_link_select",
+        )
+        fail_specific = st.button("Fail Selected Link", use_container_width=True)
+    else:
+        st.caption("No UP links available.")
+        fail_specific = False
+        selected_fail_link = None
+
+    if down_link_labels:
+        selected_restore_link = st.selectbox(
+            "Select link to restore",
+            down_link_labels,
+            key="restore_link_select",
+        )
+        restore_specific = st.button("Restore Selected Link", use_container_width=True)
+    else:
+        st.caption("No DOWN links to restore.")
+        restore_specific = False
+        selected_restore_link = None
+
     st.info(
         "Simulation changes the live topology. "
         "The controller then recalculates routes from current link state."
     )
 
 active_path = controller.active_route.path if controller.active_route else None
+
+# ------------------------------------------------------------------
+# Button handlers
+# ------------------------------------------------------------------
 
 if calculate:
     if source == destination:
@@ -256,6 +343,41 @@ if reset:
     controller.destination = None
     controller.log_event("RESET", "Network reset to the original configuration.")
     st.sidebar.success("Topology restored from network_config.json.")
+
+# Per-link utilization apply
+if apply_util and selected_util_link:
+    util_src, util_dst = _parse_link_label(selected_util_link)
+    ok = simulator.set_link_utilization(util_src, util_dst, float(new_util))
+    if ok:
+        info = topology.get_link_info(util_src, util_dst)
+        state = controller.monitor.congestion_state(info["utilization"], info["status"])
+        controller.recalculate(
+            f"Utilization on {util_src}-{util_dst} set to {new_util}% ({state})."
+        )
+    else:
+        st.sidebar.error(f"Cannot set utilization: {util_src}-{util_dst} is DOWN or does not exist.")
+
+# Per-link failure
+if fail_specific and selected_fail_link:
+    fs, fd = _parse_link_label(selected_fail_link)
+    ok = simulator.fail_specific_link(fs, fd)
+    if ok:
+        controller.recalculate(f"Link {fs}-{fd} manually set to DOWN.")
+    else:
+        st.sidebar.warning(f"Link {fs}-{fd} is already DOWN or does not exist.")
+
+# Per-link restoration
+if restore_specific and selected_restore_link:
+    rs, rd = _parse_link_label(selected_restore_link)
+    ok = simulator.restore_specific_link(rs, rd)
+    if ok:
+        controller.recalculate(f"Link {rs}-{rd} restored to UP.")
+    else:
+        st.sidebar.warning(f"Link {rs}-{rd} is already UP or does not exist.")
+
+# ------------------------------------------------------------------
+# Main dashboard display (unchanged layout)
+# ------------------------------------------------------------------
 
 overview = topology.overview()
 st.subheader("Network Overview")

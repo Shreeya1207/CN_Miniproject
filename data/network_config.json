@@ -6,7 +6,7 @@
   },
   "congestion_model": {
     "penalty_weight": 10.0,
-    "description": "effective_cost = base_cost + (utilization / 100) * penalty_weight"
+    "description": "effective_cost = base_cost * (1 + (utilization / 100) ** 2)"
   },
   "nodes": ["S1", "S2", "S3", "S4", "S5", "S6"],
   "links": [

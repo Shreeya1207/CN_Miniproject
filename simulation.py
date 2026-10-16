@@ -11,6 +11,10 @@ class NetworkSimulator:
     def __init__(self, topology: NetworkTopology) -> None:
         self.topology = topology
 
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
     def _links_on_path(self, path: list[str] | None) -> list[tuple[str, str]]:
         if not path or len(path) < 2:
             return []
@@ -37,6 +41,10 @@ class NetworkSimulator:
         all_up.sort(reverse=True)
         _, u, v = all_up[0]
         return u, v
+
+    # ------------------------------------------------------------------
+    # Path-level traffic adjustment (existing buttons)
+    # ------------------------------------------------------------------
 
     def increase_traffic(self, path: list[str] | None, amount: float = 15.0) -> list[tuple[str, str]]:
         updated = []
@@ -79,6 +87,36 @@ class NetworkSimulator:
         self.topology.update_link_utilization(u, v, utilization)
         return u, v
 
+    # ------------------------------------------------------------------
+    # Per-link traffic control  (NEW)
+    # ------------------------------------------------------------------
+
+    def set_link_utilization(
+        self,
+        source: str,
+        destination: str,
+        utilization: float,
+    ) -> bool:
+        """Set a specific link's utilization directly (0-100%).
+
+        Does NOT change the link's UP/DOWN status — congestion and failure
+        remain independent states.
+
+        Returns True if the link exists and is UP, False otherwise.
+        """
+        try:
+            info = self.topology.get_link_info(source, destination)
+        except KeyError:
+            return False
+        if info["status"] != "UP":
+            return False
+        self.topology.update_link_utilization(source, destination, utilization)
+        return True
+
+    # ------------------------------------------------------------------
+    # Link failure simulation (existing — auto-selects busiest)
+    # ------------------------------------------------------------------
+
     def simulate_link_failure(self, path: list[str] | None) -> tuple[str, str] | None:
         """Take down an UP link on the current path (or any UP link)."""
         target = self._busiest_up_link(path)
@@ -87,6 +125,43 @@ class NetworkSimulator:
         u, v = target
         self.topology.set_link_status(u, v, "DOWN")
         return u, v
+
+    # ------------------------------------------------------------------
+    # Per-link failure / restoration  (NEW)
+    # ------------------------------------------------------------------
+
+    def fail_specific_link(self, source: str, destination: str) -> bool:
+        """Mark a specific link DOWN regardless of utilization.
+
+        Returns True on success, False if link does not exist or is already DOWN.
+        Congestion (high utilization) is NOT changed — only status changes.
+        """
+        try:
+            info = self.topology.get_link_info(source, destination)
+        except KeyError:
+            return False
+        if info["status"] == "DOWN":
+            return False  # already down, no-op to prevent corruption
+        self.topology.set_link_status(source, destination, "DOWN")
+        return True
+
+    def restore_specific_link(self, source: str, destination: str) -> bool:
+        """Bring a specific DOWN link back UP.
+
+        Returns True on success, False if link does not exist or is already UP.
+        """
+        try:
+            info = self.topology.get_link_info(source, destination)
+        except KeyError:
+            return False
+        if info["status"] == "UP":
+            return False  # already up
+        self.topology.restore_link(source, destination)
+        return True
+
+    # ------------------------------------------------------------------
+    # Bulk restore / reset
+    # ------------------------------------------------------------------
 
     def restore_failed_links(self) -> list[tuple[str, str]]:
         restored = []

@@ -1,4 +1,11 @@
-"""Routing engine: candidate paths and selection policies."""
+"""Routing engine: candidate paths and selection policies.
+
+Selection policy:
+- Minimum Hop Count  → nx.dijkstra_path with weight=1 (every edge identical cost)
+- Minimum Link Cost  → nx.dijkstra_path with weight='effective_cost'
+
+Candidate table is still populated via nx.shortest_simple_paths for display.
+"""
 
 from __future__ import annotations
 
@@ -53,11 +60,15 @@ class RoutingResult:
 
 
 class RoutingEngine:
-    """Compute paths from the live topology. No hardcoded routes."""
+    """Compute paths from the live topology using genuine Dijkstra's algorithm."""
 
     def __init__(self, topology: NetworkTopology, max_paths: int = 12) -> None:
         self.topology = topology
         self.max_paths = max_paths
+
+    # ------------------------------------------------------------------
+    # Path metric calculation
+    # ------------------------------------------------------------------
 
     def calculate_path_metrics(self, path: list[str]) -> PathMetrics:
         hops = max(0, len(path) - 1)
@@ -97,6 +108,35 @@ class RoutingEngine:
             status="AVAILABLE" if available else "UNAVAILABLE",
         )
 
+    # ------------------------------------------------------------------
+    # Dijkstra best-path selection
+    # ------------------------------------------------------------------
+
+    def _dijkstra_best(
+        self,
+        active: nx.Graph,
+        source: str,
+        destination: str,
+        algorithm: Algorithm,
+    ) -> list[str] | None:
+        """Return the single Dijkstra-optimal path or None if unreachable."""
+        if not nx.has_path(active, source, destination):
+            return None
+        try:
+            if algorithm == "Minimum Hop Count":
+                # All edges have equal weight → Dijkstra degenerates to BFS/hop-min
+                path = nx.dijkstra_path(active, source, destination, weight=lambda u, v, d: 1)
+            else:
+                # Weight = effective_cost stored on each edge
+                path = nx.dijkstra_path(active, source, destination, weight="effective_cost")
+            return path
+        except nx.NetworkXNoPath:
+            return None
+
+    # ------------------------------------------------------------------
+    # Candidate enumeration (for the Available Paths display table)
+    # ------------------------------------------------------------------
+
     def find_candidate_paths(self, source: str, destination: str) -> list[PathMetrics]:
         if source == destination:
             return [self.calculate_path_metrics([source])]
@@ -119,21 +159,48 @@ class RoutingEngine:
         metrics = [self.calculate_path_metrics(path) for path in raw_paths]
         return [item for item in metrics if item.status == "AVAILABLE"]
 
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
     def select_best_path(
         self,
         candidates: list[PathMetrics],
         algorithm: Algorithm,
+        dijkstra_path: list[str] | None = None,
     ) -> PathMetrics | None:
+        """Mark and return the best candidate, prioritising Dijkstra result."""
         available = [path for path in candidates if path.status == "AVAILABLE"]
         if not available:
             return None
 
-        if algorithm == "Minimum Hop Count":
-            available.sort(key=lambda p: (p.hops, p.total_cost, p.total_latency, p.path_label()))
-        else:
-            available.sort(key=lambda p: (p.total_cost, p.hops, p.total_latency, p.path_label()))
+        # Try to match the Dijkstra path among pre-computed candidates
+        best: PathMetrics | None = None
+        if dijkstra_path is not None:
+            for candidate in available:
+                if candidate.path == dijkstra_path:
+                    best = candidate
+                    break
 
-        best = available[0]
+        # Fallback: pick from candidates by algorithm key if Dijkstra path not
+        # present in the enumerated list (e.g., max_paths cut it off)
+        if best is None:
+            if dijkstra_path is not None:
+                # Synthesise metrics for the Dijkstra path directly
+                metrics = self.calculate_path_metrics(dijkstra_path)
+                if metrics.status == "AVAILABLE":
+                    best = metrics
+                    candidates.append(best)
+
+        # Last resort: sort candidates by algorithm ordering
+        if best is None:
+            if algorithm == "Minimum Hop Count":
+                available.sort(key=lambda p: (p.hops, p.total_cost, p.total_latency, p.path_label()))
+            else:
+                available.sort(key=lambda p: (p.total_cost, p.hops, p.total_latency, p.path_label()))
+            best = available[0]
+
+        # Mark selected flag on every candidate
         for candidate in candidates:
             candidate.selected = candidate.path == best.path
         return best
@@ -152,8 +219,24 @@ class RoutingEngine:
                 message="Invalid source or destination node.",
             )
 
+        if source == destination:
+            candidates = self.find_candidate_paths(source, destination)
+            best = candidates[0] if candidates else None
+            return RoutingResult(
+                source=source,
+                destination=destination,
+                algorithm=algorithm,
+                candidates=candidates,
+                best_path=best,
+                message="Source and destination are the same node.",
+            )
+
+        active = self.topology.get_active_graph()
+        dijkstra_path = self._dijkstra_best(active, source, destination, algorithm)
+
         candidates = self.find_candidate_paths(source, destination)
-        best = self.select_best_path(candidates, algorithm)
+        best = self.select_best_path(candidates, algorithm, dijkstra_path)
+
         if best is None:
             return RoutingResult(
                 source=source,

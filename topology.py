@@ -107,10 +107,16 @@ class NetworkTopology:
         return max(0.0, min(100.0, float(utilization)))
 
     def effective_cost(self, source: str, destination: str) -> float:
-        """base_cost + (utilization / 100) * penalty_weight."""
+        """effective_cost = base_cost * (1 + (utilization / 100) ** 2).
+
+        Congestion has a quadratic impact so heavily loaded links become
+        disproportionately expensive, causing the routing engine to prefer
+        alternative paths under high utilization.
+        """
         u, v = self._edge_key(source, destination)
         data = self.graph[u][v]
-        return float(data["cost"]) + (float(data["utilization"]) / 100.0) * self.penalty_weight
+        util_fraction = float(data["utilization"]) / 100.0
+        return float(data["cost"]) * (1.0 + util_fraction ** 2)
 
     def _refresh_effective_cost(self, source: str, destination: str) -> None:
         u, v = self._edge_key(source, destination)
